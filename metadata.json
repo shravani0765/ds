@@ -1,0 +1,5 @@
+{
+  "name": "FairDecision: Bias Identification & Mitigation System",
+  "description": "An advanced platform for detecting and mitigating bias in automated decision-making systems using the Adult Income dataset. Features bias detection metrics, mitigation techniques, and explainable AI visualizations.",
+  "requestFramePermissions": []
+}
