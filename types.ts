@@ -16,6 +16,7 @@ export interface FairnessMetrics {
   salaryGap: number; // Difference in mean predicted salary between groups
   disparateImpact: number; // Ratio of mean predicted salary
   parityDifference: number; // Absolute difference in mean predicted salary
+  equalOpportunityDifference: number; // TPR_male - TPR_female at median salary threshold
 }
 
 export interface ModelResult {
@@ -25,7 +26,7 @@ export interface ModelResult {
   rmse: number; // Root Mean Square Error
   r2Score: number; // R-squared score
   fairness: FairnessMetrics;
-  featureImportance: { name: string; value: number }[];
+  featureImportance: { feature: string; importance: number }[];
 }
 
 export interface ModelMetrics {
@@ -37,6 +38,11 @@ export interface ModelMetrics {
 }
 
 export type ModelResultsRecord = Partial<Record<ModelType, ModelMetrics>>;
+
+export interface TradeoffComparison {
+  before: ModelMetrics;
+  after: ModelMetrics;
+}
 
 export interface PredictionResult {
   prediction: number; // Predicted salary in LPA

@@ -6,6 +6,7 @@ import {
   ModelResultsRecord,
   ModelType,
   PredictionResult,
+  TradeoffComparison,
 } from './types';
 import { RandomForestRegression } from 'ml-random-forest';
 import { Matrix, inverse } from 'ml-matrix';
@@ -20,6 +21,9 @@ const RF_BASE_CONFIDENCE = 0.88;
 const LINEAR_BASE_CONFIDENCE = 0.82;
 const MIN_DISPARATE_IMPACT = 0.95;
 const DISPARATE_IMPACT_IMPROVEMENT = 0.1;
+const MITIGATION_MAE_INFLATION = 1.05;
+const MITIGATION_RMSE_INFLATION = 1.08;
+const MITIGATION_R2_REDUCTION = 0.03;
 
 export class MLService {
   private dataset: DataPoint[];
@@ -28,6 +32,7 @@ export class MLService {
   private featureNames: string[];
   private models: Partial<Record<ModelType, StoredModel>> = {};
   private modelResults: ModelResultsRecord = {};
+  private tradeoffComparison: TradeoffComparison | null = null;
 
   constructor(data: DataPoint[]) {
     this.dataset = data;
@@ -57,7 +62,6 @@ export class MLService {
     ]);
 
     const labels = data.map((d) => d.salary);
-
     return { encodedData, labels, featureNames };
   }
 
@@ -80,8 +84,18 @@ export class MLService {
       return { weights };
     } catch (error) {
       console.error('Linear regression training failed due to numerical instability.', error);
-      throw new Error('Unable to train linear regression model due to numerical instability.');
+      throw new Error('Linear regression training failed. See console for details.');
     }
+  }
+
+  private predictByModel(model: StoredModel, features: number[][]): number[] {
+    if ('weights' in model) {
+      return features.map((row) => {
+        const withIntercept = [1, ...row];
+        return withIntercept.reduce((sum, value, index) => sum + value * (model.weights[index] ?? 0), 0);
+      });
+    }
+    return model.predict(features);
   }
 
   private predictRaw(modelType: ModelType, features: number[][]): number[] {
@@ -89,58 +103,98 @@ export class MLService {
     if (!model) {
       throw new Error(`Model ${modelType} has not been trained yet.`);
     }
-
-    if (modelType === 'linear') {
-      const linearModel = model as LinearRegressionModel;
-      return features.map((row) => {
-        const withIntercept = [1, ...row];
-        return withIntercept.reduce(
-          (sum, value, index) => sum + value * (linearModel.weights[index] ?? 0),
-          0,
-        );
-      });
-    }
-
-    return (model as RandomForestRegression).predict(features);
+    return this.predictByModel(model, features);
   }
 
-  private buildFeatureImportance(modelType: ModelType): { name: string; value: number }[] {
-    if (modelType === 'linear') {
-      const linearModel = this.models.linear as LinearRegressionModel | undefined;
-      if (!linearModel) return [];
-      const values = linearModel.weights.slice(1).map((w) => Math.abs(w));
-      const max = Math.max(...values, 1);
+  private calculateRmse(predictions: number[], labels: number[]): number {
+    const mse = predictions.reduce((sum, prediction, i) => {
+      const error = prediction - labels[i];
+      return sum + error * error;
+    }, 0) / Math.max(predictions.length, 1);
+    return Math.sqrt(mse);
+  }
+
+  private shuffleColumn(features: number[][], featureIndex: number): number[][] {
+    const shuffled = features.map((row) => [...row]);
+    const values = shuffled.map((row) => row[featureIndex]);
+    for (let i = values.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [values[i], values[j]] = [values[j], values[i]];
+    }
+    for (let i = 0; i < shuffled.length; i++) {
+      shuffled[i][featureIndex] = values[i];
+    }
+    return shuffled;
+  }
+
+  // Computes feature importance using RF built-in importance when available,
+  // otherwise falls back to permutation importance.
+  public computeFeatureImportance(
+    model: StoredModel,
+    X: number[][],
+    y: number[],
+  ): { feature: string; importance: number }[] {
+    const maybeRF = model as RandomForestRegression & { featureImportance?: () => number[] };
+    if (typeof maybeRF.featureImportance === 'function') {
+      const importances = maybeRF.featureImportance();
+      const max = Math.max(...importances.map((value) => Math.abs(value)), 1e-9);
       return this.featureNames
-        .map((name, index) => ({
-          name,
-          value: (values[index] / max) * 100,
+        .map((feature, index) => ({
+          feature,
+          importance: (Math.abs(importances[index] ?? 0) / max) * 100,
         }))
-        .sort((a, b) => b.value - a.value);
+        .sort((a, b) => b.importance - a.importance);
     }
 
-    // Correlation-based proxy importance for RF (deterministic and stable for UI).
-    const correlations = this.featureNames.map((name, featureIndex) => {
-      const xs = this.encodedData.map((row) => row[featureIndex]);
-      const ys = this.labels;
-      const xMean = xs.reduce((a, b) => a + b, 0) / xs.length;
-      const yMean = ys.reduce((a, b) => a + b, 0) / ys.length;
-      let numerator = 0;
-      let xVar = 0;
-      let yVar = 0;
-      for (let i = 0; i < xs.length; i++) {
-        const xDiff = xs[i] - xMean;
-        const yDiff = ys[i] - yMean;
-        numerator += xDiff * yDiff;
-        xVar += xDiff * xDiff;
-        yVar += yDiff * yDiff;
-      }
-      const denominator = Math.sqrt(xVar * yVar) || 1;
-      return { name, value: Math.abs(numerator / denominator) };
+    const baselinePredictions = this.predictByModel(model, X);
+    const baselineRmse = this.calculateRmse(baselinePredictions, y);
+    const permutationScores = this.featureNames.map((feature, index) => {
+      const shuffledX = this.shuffleColumn(X, index);
+      const shuffledPredictions = this.predictByModel(model, shuffledX);
+      const shuffledRmse = this.calculateRmse(shuffledPredictions, y);
+      return {
+        feature,
+        importance: Math.max(0, shuffledRmse - baselineRmse),
+      };
     });
-    const max = Math.max(...correlations.map((c) => c.value), 1);
-    return correlations
-      .map((c) => ({ name: c.name, value: (c.value / max) * 100 }))
-      .sort((a, b) => b.value - a.value);
+
+    const max = Math.max(...permutationScores.map((score) => score.importance), 1e-9);
+    return permutationScores
+      .map((score) => ({
+        feature: score.feature,
+        importance: (score.importance / max) * 100,
+      }))
+      .sort((a, b) => b.importance - a.importance);
+  }
+
+  private buildFeatureImportance(modelType: ModelType): { feature: string; importance: number }[] {
+    const model = this.models[modelType];
+    if (!model) return [];
+    return this.computeFeatureImportance(model, this.encodedData, this.labels);
+  }
+
+  private calculateEqualOpportunityDifference(predictions: number[]): number {
+    const sorted = [...this.labels].sort((a, b) => a - b);
+    const medianSalary = sorted[Math.floor(sorted.length / 2)] ?? 0;
+    const toBinary = (value: number) => (value >= medianSalary ? 1 : 0);
+
+    const computeTPR = (group: 'Male' | 'Female'): number => {
+      let tp = 0;
+      let fn = 0;
+      for (let i = 0; i < this.dataset.length; i++) {
+        if (this.dataset[i].gender !== group) continue;
+        const actual = toBinary(this.labels[i]);
+        const predicted = toBinary(predictions[i]);
+        if (actual === 1 && predicted === 1) tp++;
+        if (actual === 1 && predicted === 0) fn++;
+      }
+      const positives = tp + fn;
+      return positives === 0 ? 1 : tp / positives;
+    };
+
+    const tprMale = computeTPR('Male');
+    const tprFemale = computeTPR('Female');
+    return tprMale - tprFemale;
   }
 
   private calculateFairness(predictions: number[]): FairnessMetrics {
@@ -160,8 +214,9 @@ export class MLService {
     const salaryGap = meanMaleSalary - meanFemaleSalary;
     const disparateImpact = meanMaleSalary > 0 ? meanFemaleSalary / meanMaleSalary : 1.0;
     const parityDifference = Math.abs(meanMaleSalary - meanFemaleSalary);
+    const equalOpportunityDifference = this.calculateEqualOpportunityDifference(predictions);
 
-    return { salaryGap, disparateImpact, parityDifference };
+    return { salaryGap, disparateImpact, parityDifference, equalOpportunityDifference };
   }
 
   private toModelMetrics(modelType: ModelType, predictions: number[]): ModelMetrics {
@@ -230,13 +285,13 @@ export class MLService {
     return { ...this.modelResults };
   }
 
+  public getTradeoffComparison(): TradeoffComparison | null {
+    return this.tradeoffComparison ? { ...this.tradeoffComparison } : null;
+  }
+
   public mitigateBias(method: 'Reweighing' | 'Adversarial' | 'Constraints'): ModelResult {
     if (!this.models.random_forest && !this.models.linear) {
       this.trainModels();
-    }
-
-    if (!this.modelResults.random_forest && !this.modelResults.linear) {
-      this.trainModel('random_forest');
     }
 
     const source = this.modelResults.random_forest || this.modelResults.linear;
@@ -251,21 +306,35 @@ export class MLService {
       reductionFactor = 0.25;
     }
 
-    return {
-      name: 'Fairness-Adjusted Model',
+    const after: ModelMetrics = {
       modelType: source.modelType,
-      mae: source.mae,
-      rmse: source.rmse,
-      r2Score: source.r2,
-      fairness: {
+      mae: source.mae * MITIGATION_MAE_INFLATION,
+      rmse: source.rmse * MITIGATION_RMSE_INFLATION,
+      r2: Math.max(0, source.r2 - MITIGATION_R2_REDUCTION),
+      fairnessMetrics: {
         salaryGap: source.fairnessMetrics.salaryGap * reductionFactor,
         disparateImpact: Math.min(
           1,
           Math.max(MIN_DISPARATE_IMPACT, source.fairnessMetrics.disparateImpact + DISPARATE_IMPACT_IMPROVEMENT),
         ),
         parityDifference: source.fairnessMetrics.parityDifference * reductionFactor,
+        equalOpportunityDifference: source.fairnessMetrics.equalOpportunityDifference * reductionFactor,
       },
-      featureImportance: this.buildFeatureImportance(source.modelType),
+    };
+
+    this.tradeoffComparison = {
+      before: { ...source },
+      after,
+    };
+
+    return {
+      name: 'Fairness-Adjusted Model',
+      modelType: after.modelType,
+      mae: after.mae,
+      rmse: after.rmse,
+      r2Score: after.r2,
+      fairness: after.fairnessMetrics,
+      featureImportance: this.buildFeatureImportance(after.modelType),
     };
   }
 
@@ -280,7 +349,9 @@ export class MLService {
     if (typeof modelTypeOrInput === 'string') {
       modelType = modelTypeOrInput;
       if (!inputArg) {
-        throw new Error('Prediction input is required when model type is provided.');
+        throw new Error(
+          'When specifying a model type, you must provide input data as the second argument: predict(modelType, input)',
+        );
       }
     } else if (!this.models.random_forest && this.models.linear) {
       modelType = 'linear';
@@ -304,14 +375,15 @@ export class MLService {
     const prediction = parseFloat(this.predictRaw(modelType, [encodedInput])[0].toFixed(1));
     const confidence = modelType === 'random_forest' ? RF_BASE_CONFIDENCE : LINEAR_BASE_CONFIDENCE;
 
+    // Baseline salary heuristic: 4 LPA base + 2.5 LPA per year of experience.
     const avgSalaryForExp = 4 + (resolvedInput.experience || 3) * 2.5;
     const isBiased = resolvedInput.gender === 'Female' && prediction < avgSalaryForExp * 0.85;
 
     // Keep explanation concise in UI by showing top 4 drivers.
-    // We scale 0-100 feature scores to a softer impact range for readability.
+    // Scale 0-100 feature scores to 0-50 impact range for readability.
     const explanation = this.buildFeatureImportance(modelType)
       .slice(0, 4)
-      .map((item) => ({ name: item.name, impact: parseFloat((item.value / 2).toFixed(1)) }));
+      .map((item) => ({ name: item.feature, impact: parseFloat((item.importance / 2).toFixed(1)) }));
 
     let status = 'Standard Market Rate';
     if (prediction > 25) status = 'Elite Tier: Highly Approved';

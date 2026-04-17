@@ -44,7 +44,7 @@ import { motion, AnimatePresence } from 'motion/react';
 const COLORS = ['#6366f1', '#f43f5e', '#10b981', '#f59e0b', '#8b5cf6'];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'overview' | 'training' | 'bias' | 'mitigation' | 'predict'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'training' | 'explainability' | 'bias' | 'mitigation' | 'predict'>('overview');
   const [dataset, setDataset] = useState<DataPoint[]>([]);
   const [models, setModels] = useState<ModelResult[]>([]);
   const [mitigatedModel, setMitigatedModel] = useState<ModelResult | null>(null);
@@ -68,6 +68,7 @@ export default function App() {
   const [whatIfResult, setWhatIfResult] = useState<PredictionResult | null>(null);
   const [showWhatIf, setShowWhatIf] = useState(false);
   const [selectedModelType, setSelectedModelType] = useState<ModelType>('random_forest');
+  const [tradeoffData, setTradeoffData] = useState<ReturnType<MLService['getTradeoffComparison']>>(null);
 
   useEffect(() => {
     fetch('/Dataset.csv')
@@ -131,6 +132,7 @@ export default function App() {
         setMlService(service);
         setModels([]);
         setMitigatedModel(null);
+        setTradeoffData(null);
         setIsUploading(false);
         setActiveTab('overview');
       }
@@ -143,6 +145,7 @@ export default function App() {
     setTimeout(() => {
       const results = mlService.trainModels();
       setModels(results);
+      setTradeoffData(null);
       setIsTraining(false);
       setActiveTab('training');
     }, 1500);
@@ -152,6 +155,7 @@ export default function App() {
     if (!mlService) return;
     const result = mlService.mitigateBias('Reweighing');
     setMitigatedModel(result);
+    setTradeoffData(mlService.getTradeoffComparison());
     setActiveTab('mitigation');
   };
 
@@ -247,6 +251,13 @@ export default function App() {
             disabled={models.length === 0}
           />
           <NavItem 
+            active={activeTab === 'explainability'} 
+            onClick={() => setActiveTab('explainability')} 
+            icon={<Info size={18} />} 
+            label="Explainability" 
+            disabled={models.length === 0}
+          />
+          <NavItem 
             active={activeTab === 'bias'} 
             onClick={() => setActiveTab('bias')} 
             icon={<ShieldAlert size={18} />} 
@@ -292,6 +303,7 @@ export default function App() {
           <h2 className="font-semibold text-gray-800">
             {activeTab === 'overview' && 'Dataset Insights'}
             {activeTab === 'training' && 'Model Performance'}
+            {activeTab === 'explainability' && 'Explainability Insights'}
             {activeTab === 'bias' && 'Fairness Audit'}
             {activeTab === 'mitigation' && 'Bias Mitigation Results'}
             {activeTab === 'predict' && 'Individual Decision Analysis'}
@@ -579,9 +591,31 @@ export default function App() {
                     <BarChart layout="vertical" data={primaryModel?.featureImportance}>
                       <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f0f0f0" />
                       <XAxis type="number" hide />
-                      <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} width={100} />
+                      <YAxis dataKey="feature" type="category" axisLine={false} tickLine={false} width={140} />
                       <Tooltip />
-                      <Bar dataKey="value" fill="#6366f1" radius={[0, 4, 4, 0]} barSize={30} />
+                      <Bar dataKey="importance" fill="#6366f1" radius={[0, 4, 4, 0]} barSize={30} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'explainability' && primaryModel && (
+            <div className="space-y-8">
+              <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm">
+                <h3 className="text-lg font-bold text-gray-900 mb-2">Explainability</h3>
+                <p className="text-sm text-gray-500 mb-8">
+                  Top features ranked by model impact using built-in Random Forest importance or permutation importance fallback.
+                </p>
+                <div className="h-96">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={primaryModel.featureImportance}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+                      <XAxis dataKey="feature" axisLine={false} tickLine={false} />
+                      <YAxis axisLine={false} tickLine={false} />
+                      <Tooltip formatter={(v: number) => `${v.toFixed(1)}%`} />
+                      <Bar dataKey="importance" fill="#6366f1" radius={[6, 6, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -600,6 +634,7 @@ export default function App() {
                         { subject: 'Fairness Score', A: primaryModel.fairness.disparateImpact * 100, full: 100 },
                         { subject: 'Salary Gap (Inv)', A: Math.max(0, (1 - (primaryModel.fairness.salaryGap / 10)) * 100), full: 100 },
                         { subject: 'Diff in Chances', A: Math.max(0, (1 - (primaryModel.fairness.parityDifference / 10)) * 100), full: 100 },
+                        { subject: 'Equal Opp (Inv)', A: Math.max(0, (1 - Math.abs(primaryModel.fairness.equalOpportunityDifference)) * 100), full: 100 },
                       ]}>
                         <PolarGrid />
                         <PolarAngleAxis dataKey="subject" />
@@ -620,6 +655,7 @@ export default function App() {
                     threshold="0.8 - 1.25"
                     desc="Ratio of mean predicted salary for unprivileged (Female) vs privileged (Male) groups."
                     status={primaryModel.fairness.disparateImpact < 0.8 ? 'fail' : 'pass'}
+                    tooltip="Closer to 1.0 indicates similar outcomes across groups."
                   />
                   <FairnessCard 
                     title="Salary Gap (LPA)" 
@@ -627,6 +663,7 @@ export default function App() {
                     threshold="< 1.0"
                     desc="Difference in mean predicted salary between Male and Female groups."
                     status={primaryModel.fairness.salaryGap > 2.0 ? 'fail' : 'pass'}
+                    tooltip="Absolute value close to 0 indicates fairness."
                   />
                   <FairnessCard 
                     title="Parity Difference" 
@@ -634,6 +671,15 @@ export default function App() {
                     threshold="< 1.0"
                     desc="Absolute difference in mean outcomes across groups."
                     status={primaryModel.fairness.parityDifference > 2.0 ? 'fail' : 'pass'}
+                    tooltip="Lower parity difference means better demographic parity."
+                  />
+                  <FairnessCard 
+                    title="Equal Opportunity Difference" 
+                    value={primaryModel.fairness.equalOpportunityDifference} 
+                    threshold="≈ 0"
+                    desc="Difference in true positive rates between Male and Female groups at the median salary threshold."
+                    status={Math.abs(primaryModel.fairness.equalOpportunityDifference) > 0.1 ? 'fail' : 'pass'}
+                    tooltip="Calculated as TPR_male - TPR_female. Near zero is preferred."
                   />
                 </div>
               </div>
@@ -669,6 +715,7 @@ export default function App() {
                   <div className="space-y-6">
                     <FairnessProgress label="Disparate Impact" value={primaryModel.fairness.disparateImpact} color="#f43f5e" />
                     <FairnessProgress label="Salary Equality" value={Math.max(0, 1 - (primaryModel.fairness.salaryGap / 15))} color="#f43f5e" />
+                    <FairnessProgress label="Equal Opportunity (Inv)" value={Math.max(0, 1 - Math.abs(primaryModel.fairness.equalOpportunityDifference))} color="#f43f5e" />
                   </div>
                 </div>
 
@@ -680,6 +727,7 @@ export default function App() {
                   <div className="space-y-6">
                     <FairnessProgress label="Disparate Impact" value={mitigatedModel.fairness.disparateImpact} color="#10b981" />
                     <FairnessProgress label="Salary Equality" value={Math.max(0, 1 - (mitigatedModel.fairness.salaryGap / 15))} color="#10b981" />
+                    <FairnessProgress label="Equal Opportunity (Inv)" value={Math.max(0, 1 - Math.abs(mitigatedModel.fairness.equalOpportunityDifference))} color="#10b981" />
                   </div>
                 </div>
               </div>
@@ -691,6 +739,7 @@ export default function App() {
                     <BarChart data={[
                       { name: 'Disparate Impact', Original: primaryModel.fairness.disparateImpact, Mitigated: mitigatedModel.fairness.disparateImpact },
                       { name: 'Salary Equality', Original: Math.max(0, 1 - (primaryModel.fairness.salaryGap / 15)), Mitigated: Math.max(0, 1 - (mitigatedModel.fairness.salaryGap / 15)) },
+                      { name: 'Equal Opportunity', Original: Math.max(0, 1 - Math.abs(primaryModel.fairness.equalOpportunityDifference)), Mitigated: Math.max(0, 1 - Math.abs(mitigatedModel.fairness.equalOpportunityDifference)) },
                     ]}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
                       <XAxis dataKey="name" axisLine={false} tickLine={false} />
@@ -703,6 +752,51 @@ export default function App() {
                   </ResponsiveContainer>
                 </div>
               </div>
+
+              {tradeoffData && (
+                <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm space-y-6">
+                  <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider">Accuracy vs Fairness Trade-off</h3>
+
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-gray-500 border-b border-gray-200">
+                          <th className="py-2 pr-4 font-semibold">Metric</th>
+                          <th className="py-2 pr-4 font-semibold">Before Mitigation</th>
+                          <th className="py-2 pr-4 font-semibold">After Mitigation</th>
+                        </tr>
+                      </thead>
+                      <tbody className="text-gray-700">
+                        <tr className="border-b border-gray-100"><td className="py-2 pr-4">RMSE</td><td className="py-2 pr-4">{tradeoffData.before.rmse.toFixed(3)}</td><td className="py-2 pr-4">{tradeoffData.after.rmse.toFixed(3)}</td></tr>
+                        <tr className="border-b border-gray-100"><td className="py-2 pr-4">MAE</td><td className="py-2 pr-4">{tradeoffData.before.mae.toFixed(3)}</td><td className="py-2 pr-4">{tradeoffData.after.mae.toFixed(3)}</td></tr>
+                        <tr className="border-b border-gray-100"><td className="py-2 pr-4">R²</td><td className="py-2 pr-4">{tradeoffData.before.r2.toFixed(3)}</td><td className="py-2 pr-4">{tradeoffData.after.r2.toFixed(3)}</td></tr>
+                        <tr className="border-b border-gray-100"><td className="py-2 pr-4">Disparate Impact</td><td className="py-2 pr-4">{tradeoffData.before.fairnessMetrics.disparateImpact.toFixed(3)}</td><td className="py-2 pr-4">{tradeoffData.after.fairnessMetrics.disparateImpact.toFixed(3)}</td></tr>
+                        <tr className="border-b border-gray-100"><td className="py-2 pr-4">Salary Gap</td><td className="py-2 pr-4">{tradeoffData.before.fairnessMetrics.salaryGap.toFixed(3)}</td><td className="py-2 pr-4">{tradeoffData.after.fairnessMetrics.salaryGap.toFixed(3)}</td></tr>
+                        <tr className="border-b border-gray-100"><td className="py-2 pr-4">Parity Difference</td><td className="py-2 pr-4">{tradeoffData.before.fairnessMetrics.parityDifference.toFixed(3)}</td><td className="py-2 pr-4">{tradeoffData.after.fairnessMetrics.parityDifference.toFixed(3)}</td></tr>
+                        <tr><td className="py-2 pr-4">Equal Opportunity Difference</td><td className="py-2 pr-4">{tradeoffData.before.fairnessMetrics.equalOpportunityDifference.toFixed(3)}</td><td className="py-2 pr-4">{tradeoffData.after.fairnessMetrics.equalOpportunityDifference.toFixed(3)}</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="h-72">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={[
+                        { metric: 'RMSE', Before: tradeoffData.before.rmse, After: tradeoffData.after.rmse },
+                        { metric: 'MAE', Before: tradeoffData.before.mae, After: tradeoffData.after.mae },
+                        { metric: 'R²', Before: tradeoffData.before.r2, After: tradeoffData.after.r2 },
+                      ]}>
+                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
+                        <XAxis dataKey="metric" axisLine={false} tickLine={false} />
+                        <YAxis axisLine={false} tickLine={false} />
+                        <Tooltip />
+                        <Legend />
+                        <Bar dataKey="Before" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="After" fill="#f43f5e" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -962,12 +1056,33 @@ function MetricRow({ label, value, isPercentage = true }: { label: string, value
   );
 }
 
-function FairnessCard({ title, value, threshold, desc, status }: { title: string, value: number, threshold: string, desc: string, status: 'pass' | 'fail' }) {
+function FairnessCard({
+  title,
+  value,
+  threshold,
+  desc,
+  status,
+  tooltip,
+}: {
+  title: string,
+  value: number,
+  threshold: string,
+  desc: string,
+  status: 'pass' | 'fail',
+  tooltip?: string,
+}) {
   const safeValue = isNaN(value) ? 0 : value;
   return (
     <div className="bg-white p-5 rounded-xl border border-gray-200">
       <div className="flex justify-between items-start mb-2">
-        <h4 className="font-bold text-gray-800 text-sm">{title}</h4>
+        <h4 className="font-bold text-gray-800 text-sm flex items-center gap-1">
+          {title}
+          {tooltip && (
+            <span title={tooltip} className="text-gray-400 cursor-help">
+              <Info size={12} />
+            </span>
+          )}
+        </h4>
         <div className={cn("px-2 py-0.5 rounded text-[10px] font-black uppercase", status === 'pass' ? "bg-green-50 text-green-600" : "bg-red-50 text-red-600")}>
           {status === 'pass' ? 'Within Range' : 'Bias Alert'}
         </div>
