@@ -75,8 +75,13 @@ export class MLService {
       regularized.set(i, i, regularized.get(i, i) + lambda);
     }
 
-    const weights = inverse(regularized).mmul(xt).mmul(y).to1DArray();
-    return { weights };
+    try {
+      const weights = inverse(regularized).mmul(xt).mmul(y).to1DArray();
+      return { weights };
+    } catch (error) {
+      console.error('Linear regression training failed due to numerical instability.', error);
+      throw new Error('Unable to train linear regression model due to numerical instability.');
+    }
   }
 
   private predictRaw(modelType: ModelType, features: number[][]): number[] {
@@ -230,10 +235,14 @@ export class MLService {
       this.trainModels();
     }
 
-    const source =
-      this.modelResults.random_forest ||
-      this.modelResults.linear ||
-      this.toModelMetrics('random_forest', this.predictRaw('random_forest', this.encodedData));
+    if (!this.modelResults.random_forest && !this.modelResults.linear) {
+      this.trainModel('random_forest');
+    }
+
+    const source = this.modelResults.random_forest || this.modelResults.linear;
+    if (!source) {
+      throw new Error('No trained model results available for mitigation.');
+    }
 
     let reductionFactor = 0.2;
     if (method === 'Constraints') {
@@ -276,27 +285,30 @@ export class MLService {
     } else if (!this.models.random_forest && this.models.linear) {
       modelType = 'linear';
     }
-    const input: Partial<DataPoint> = typeof modelTypeOrInput === 'string' ? inputArg || {} : modelTypeOrInput;
+    const resolvedInput: Partial<DataPoint> =
+      typeof modelTypeOrInput === 'string' ? inputArg || {} : modelTypeOrInput;
 
     if (!this.models[modelType]) {
       this.trainModel(modelType);
     }
 
     const encodedInput = [
-      input.age || 25,
-      input.workHours || 40,
-      input.experience || 3,
-      input.gender === 'Male' ? 1 : 0,
-      input.location === 'Bengaluru' ? 1 : 0,
-      input.location === 'Hyderabad' ? 1 : 0,
+      resolvedInput.age || 25,
+      resolvedInput.workHours || 40,
+      resolvedInput.experience || 3,
+      resolvedInput.gender === 'Male' ? 1 : 0,
+      resolvedInput.location === 'Bengaluru' ? 1 : 0,
+      resolvedInput.location === 'Hyderabad' ? 1 : 0,
     ];
 
     const prediction = parseFloat(this.predictRaw(modelType, [encodedInput])[0].toFixed(1));
     const confidence = modelType === 'random_forest' ? RF_BASE_CONFIDENCE : LINEAR_BASE_CONFIDENCE;
 
-    const avgSalaryForExp = 4 + (input.experience || 3) * 2.5;
-    const isBiased = input.gender === 'Female' && prediction < avgSalaryForExp * 0.85;
+    const avgSalaryForExp = 4 + (resolvedInput.experience || 3) * 2.5;
+    const isBiased = resolvedInput.gender === 'Female' && prediction < avgSalaryForExp * 0.85;
 
+    // Keep explanation concise in UI by showing top 4 drivers.
+    // We scale 0-100 feature scores to a softer impact range for readability.
     const explanation = this.buildFeatureImportance(modelType)
       .slice(0, 4)
       .map((item) => ({ name: item.name, impact: parseFloat((item.value / 2).toFixed(1)) }));
@@ -309,7 +321,7 @@ export class MLService {
 
     return {
       prediction,
-      predictedDomain: input.occupation || 'Software Engineer',
+      predictedDomain: resolvedInput.occupation || 'Software Engineer',
       status,
       confidence,
       isBiased,
