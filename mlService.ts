@@ -197,8 +197,9 @@ export class MLService {
       this.models.linear = this.trainLinearRegression(trainData, trainLabels);
     } else {
       this.models.random_forest = new RandomForestRegression({
-        nEstimators: 50,
-        treeOptions: { maxDepth: 10 },
+        // Keep model lightweight for smooth in-browser training.
+        nEstimators: 20,
+        treeOptions: { maxDepth: 8 },
       });
       (this.models.random_forest as RandomForestRegression).train(trainData, trainLabels);
     }
@@ -230,7 +231,12 @@ export class MLService {
       this.modelResults.linear ||
       this.toModelMetrics('random_forest', this.predictRaw('random_forest', this.encodedData));
 
-    const reductionFactor = method === 'Constraints' ? 0.15 : method === 'Adversarial' ? 0.25 : 0.2;
+    let reductionFactor = 0.2;
+    if (method === 'Constraints') {
+      reductionFactor = 0.15;
+    } else if (method === 'Adversarial') {
+      reductionFactor = 0.25;
+    }
 
     return {
       name: 'Fairness-Adjusted Model',
@@ -253,8 +259,12 @@ export class MLService {
     modelTypeOrInput: ModelType | Partial<DataPoint>,
     inputArg?: Partial<DataPoint>,
   ): PredictionResult {
-    const modelType: ModelType =
-      typeof modelTypeOrInput === 'string' ? modelTypeOrInput : this.modelResults.random_forest ? 'random_forest' : 'linear';
+    let modelType: ModelType = 'linear';
+    if (typeof modelTypeOrInput === 'string') {
+      modelType = modelTypeOrInput;
+    } else if (this.modelResults.random_forest) {
+      modelType = 'random_forest';
+    }
     const input: Partial<DataPoint> = typeof modelTypeOrInput === 'string' ? inputArg || {} : modelTypeOrInput;
 
     if (!this.models[modelType]) {
