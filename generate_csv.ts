@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import Papa from 'papaparse';
-import { generateSyntheticData } from '../src/lib/dataset';
+import { generateSyntheticData } from './dataset';
 
 const outputDir = path.join(process.cwd(), 'public');
 if (!fs.existsSync(outputDir)) {

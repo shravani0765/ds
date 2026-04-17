@@ -10,19 +10,44 @@ export interface DataPoint {
   [key: string]: any;
 }
 
+export type ModelType = 'linear' | 'random_forest';
+
 export interface FairnessMetrics {
   salaryGap: number; // Difference in mean predicted salary between groups
   disparateImpact: number; // Ratio of mean predicted salary
   parityDifference: number; // Absolute difference in mean predicted salary
+  equalOpportunityDifference: number; // TPR_male - TPR_female at median salary threshold
+}
+
+export interface FeatureImportanceItem {
+  feature: string;
+  importance: number;
+  stdDev?: number;
 }
 
 export interface ModelResult {
   name: string;
+  modelType: ModelType;
   mae: number; // Mean Absolute Error
   rmse: number; // Root Mean Square Error
   r2Score: number; // R-squared score
   fairness: FairnessMetrics;
-  featureImportance: { name: string; value: number }[];
+  featureImportance: FeatureImportanceItem[];
+}
+
+export interface ModelMetrics {
+  modelType: ModelType;
+  mae: number;
+  rmse: number;
+  r2: number;
+  fairnessMetrics: FairnessMetrics;
+}
+
+export type ModelResultsRecord = Partial<Record<ModelType, ModelMetrics>>;
+
+export interface TradeoffComparison {
+  before: ModelMetrics;
+  after: ModelMetrics;
 }
 
 export interface PredictionResult {

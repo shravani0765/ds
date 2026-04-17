@@ -1,4 +1,4 @@
-import { DataPoint } from '../types';
+import { DataPoint } from './types';
 
 // Representative subset of the Indian IT Jobs dataset with numerical salaries (LPA)
 export const ADULT_DATASET: DataPoint[] = [
