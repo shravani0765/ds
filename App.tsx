@@ -43,6 +43,9 @@ import { cn } from './utils';
 import { motion, AnimatePresence } from 'motion/react';
 
 const COLORS = ['#6366f1', '#f43f5e', '#10b981', '#f59e0b', '#8b5cf6'];
+const DISPARATE_IMPACT_WEIGHT = 10;
+const EQUAL_OPPORTUNITY_WEIGHT = 10;
+const PARITY_DIFFERENCE_WEIGHT = 1;
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'training' | 'explainability' | 'bias' | 'mitigation' | 'predict'>('overview');
@@ -181,6 +184,7 @@ export default function App() {
 
   const handleDownloadReport = () => {
     if (!mlService || models.length === 0) return;
+    const reportModel = models.find((m) => m.modelType === selectedModelType) || primaryModel;
     const report = {
       generatedAt: new Date().toISOString(),
       threshold: {
@@ -188,9 +192,10 @@ export default function App() {
         salaryValue: mlService.getFairnessThresholdValue(),
       },
       models,
+      selectedModelType,
       mitigatedModel,
       tradeoffData,
-      topFeatures: primaryModel?.featureImportance.slice(0, 10) || [],
+      topFeatures: reportModel?.featureImportance.slice(0, 10) || [],
     };
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -269,9 +274,9 @@ export default function App() {
     const scored = [...models]
       .map((model) => {
         const fairnessPenalty =
-          Math.abs(1 - model.fairness.disparateImpact) * 10 +
-          Math.abs(model.fairness.equalOpportunityDifference) * 10 +
-          model.fairness.parityDifference;
+          Math.abs(1 - model.fairness.disparateImpact) * DISPARATE_IMPACT_WEIGHT +
+          Math.abs(model.fairness.equalOpportunityDifference) * EQUAL_OPPORTUNITY_WEIGHT +
+          model.fairness.parityDifference * PARITY_DIFFERENCE_WEIGHT;
         return {
           model,
           combinedScore: model.rmse + fairnessPenalty,

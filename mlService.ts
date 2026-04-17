@@ -27,6 +27,7 @@ const MITIGATION_RMSE_INFLATION = 1.08;
 const MITIGATION_R2_REDUCTION = 0.03;
 const PERMUTATION_IMPORTANCE_ITERATIONS = 7;
 const FAIRNESS_THRESHOLD_DEFAULT_PERCENTILE = 50;
+const DEFAULT_EXPERIENCE_YEARS = 3;
 const SALARY_BASELINE = 4;
 const SALARY_PER_EXPERIENCE_YEAR = 2.5;
 
@@ -215,13 +216,13 @@ export class MLService {
 
     const max = Math.max(...permutationScores.map((score) => score.importance), 0);
     if (max === 0) {
-      return permutationScores.map((score) => ({ ...score, importance: 0, stdDev: parseFloat(score.stdDev.toFixed(6)) }));
+      return permutationScores.map((score) => ({ ...score, importance: 0, stdDev: 0 }));
     }
     return permutationScores
       .map((score) => ({
         feature: score.feature,
         importance: (score.importance / max) * 100,
-        stdDev: parseFloat(((score.stdDev / max) * 100).toFixed(3)),
+        stdDev: Number(((score.stdDev / max) * 100).toFixed(3)),
       }))
       .sort((a, b) => b.importance - a.importance);
   }
@@ -374,10 +375,10 @@ export class MLService {
       reductionFactor = 0.25;
     }
 
-    const mitigationStrength = 1 + (0.25 - reductionFactor);
-    const maeInflation = 1 + (MITIGATION_MAE_INFLATION - 1) * mitigationStrength;
-    const rmseInflation = 1 + (MITIGATION_RMSE_INFLATION - 1) * mitigationStrength;
-    const r2Reduction = MITIGATION_R2_REDUCTION * mitigationStrength;
+    const performancePenaltyFactor = 1 + (0.25 - reductionFactor);
+    const maeInflation = 1 + (MITIGATION_MAE_INFLATION - 1) * performancePenaltyFactor;
+    const rmseInflation = 1 + (MITIGATION_RMSE_INFLATION - 1) * performancePenaltyFactor;
+    const r2Reduction = MITIGATION_R2_REDUCTION * performancePenaltyFactor;
 
     const after: ModelMetrics = {
       modelType: source.modelType,
@@ -449,7 +450,8 @@ export class MLService {
     const confidence = modelType === 'random_forest' ? RF_BASE_CONFIDENCE : LINEAR_BASE_CONFIDENCE;
 
     // Baseline salary heuristic: 4 LPA base + 2.5 LPA per year of experience.
-    const avgSalaryForExp = SALARY_BASELINE + (resolvedInput.experience || 3) * SALARY_PER_EXPERIENCE_YEAR;
+    const avgSalaryForExp =
+      SALARY_BASELINE + (resolvedInput.experience || DEFAULT_EXPERIENCE_YEARS) * SALARY_PER_EXPERIENCE_YEAR;
     const isBiased = resolvedInput.gender === 'Female' && prediction < avgSalaryForExp * 0.85;
 
     // Keep explanation concise in UI by showing top 4 drivers.
