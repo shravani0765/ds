@@ -1,5 +1,6 @@
 import {
   DataPoint,
+  FeatureImportanceItem,
   FairnessMetrics,
   ModelMetrics,
   ModelResult,
@@ -24,13 +25,18 @@ const DISPARATE_IMPACT_IMPROVEMENT = 0.1;
 const MITIGATION_MAE_INFLATION = 1.05;
 const MITIGATION_RMSE_INFLATION = 1.08;
 const MITIGATION_R2_REDUCTION = 0.03;
+const PERMUTATION_IMPORTANCE_ITERATIONS = 7;
+const FAIRNESS_THRESHOLD_DEFAULT_PERCENTILE = 50;
+const SALARY_BASELINE = 4;
+const SALARY_PER_EXPERIENCE_YEAR = 2.5;
 
 export class MLService {
   private dataset: DataPoint[];
   private encodedData: number[][];
   private labels: number[];
   private featureNames: string[];
-  private medianSalary: number;
+  private fairnessThresholdPercentile: number;
+  private fairnessThresholdValue: number;
   private maleIndices: number[];
   private femaleIndices: number[];
   private models: Partial<Record<ModelType, StoredModel>> = {};
@@ -43,14 +49,35 @@ export class MLService {
     this.encodedData = encodedData;
     this.labels = labels;
     this.featureNames = featureNames;
-    const sorted = [...labels].sort((a, b) => a - b);
-    this.medianSalary = sorted[Math.floor(sorted.length / 2)] ?? 0;
+    this.fairnessThresholdPercentile = FAIRNESS_THRESHOLD_DEFAULT_PERCENTILE;
+    this.fairnessThresholdValue = this.calculatePercentileThreshold(this.fairnessThresholdPercentile);
     this.maleIndices = [];
     this.femaleIndices = [];
     for (let i = 0; i < this.dataset.length; i++) {
       if (this.dataset[i].gender === 'Male') this.maleIndices.push(i);
       else this.femaleIndices.push(i);
     }
+  }
+
+  private calculatePercentileThreshold(percentile: number): number {
+    if (this.labels.length === 0) return 0;
+    const clamped = Math.max(0, Math.min(100, percentile));
+    const sorted = [...this.labels].sort((a, b) => a - b);
+    const index = Math.round((clamped / 100) * (sorted.length - 1));
+    return sorted[index] ?? 0;
+  }
+
+  public setFairnessThresholdPercentile(percentile: number): void {
+    this.fairnessThresholdPercentile = Math.max(0, Math.min(100, percentile));
+    this.fairnessThresholdValue = this.calculatePercentileThreshold(this.fairnessThresholdPercentile);
+  }
+
+  public getFairnessThresholdPercentile(): number {
+    return this.fairnessThresholdPercentile;
+  }
+
+  public getFairnessThresholdValue(): number {
+    return this.fairnessThresholdValue;
   }
 
   private preprocess(data: DataPoint[]) {
@@ -148,7 +175,7 @@ export class MLService {
     model: StoredModel,
     X: number[][],
     y: number[],
-  ): { feature: string; importance: number }[] {
+  ): FeatureImportanceItem[] {
     const maybeRF = model as RandomForestRegression & { featureImportance?: () => number[] };
     if (typeof maybeRF.featureImportance === 'function') {
       const importances = maybeRF.featureImportance();
@@ -168,28 +195,38 @@ export class MLService {
     const baselinePredictions = this.predictByModel(model, X);
     const baselineRmse = this.calculateRmse(baselinePredictions, y);
     const permutationScores = this.featureNames.map((feature, index) => {
-      const shuffledX = this.shuffleColumn(X, index);
-      const shuffledPredictions = this.predictByModel(model, shuffledX);
-      const shuffledRmse = this.calculateRmse(shuffledPredictions, y);
+      const deltas: number[] = [];
+      for (let i = 0; i < PERMUTATION_IMPORTANCE_ITERATIONS; i++) {
+        const shuffledX = this.shuffleColumn(X, index);
+        const shuffledPredictions = this.predictByModel(model, shuffledX);
+        const shuffledRmse = this.calculateRmse(shuffledPredictions, y);
+        deltas.push(Math.max(0, shuffledRmse - baselineRmse));
+      }
+      const mean = deltas.reduce((sum, delta) => sum + delta, 0) / Math.max(deltas.length, 1);
+      const variance =
+        deltas.reduce((sum, delta) => sum + (delta - mean) * (delta - mean), 0) / Math.max(deltas.length, 1);
+      const stdDev = Math.sqrt(variance);
       return {
         feature,
-        importance: Math.max(0, shuffledRmse - baselineRmse),
+        importance: mean,
+        stdDev,
       };
     });
 
     const max = Math.max(...permutationScores.map((score) => score.importance), 0);
     if (max === 0) {
-      return permutationScores.map((score) => ({ ...score, importance: 0 }));
+      return permutationScores.map((score) => ({ ...score, importance: 0, stdDev: parseFloat(score.stdDev.toFixed(6)) }));
     }
     return permutationScores
       .map((score) => ({
         feature: score.feature,
         importance: (score.importance / max) * 100,
+        stdDev: parseFloat(((score.stdDev / max) * 100).toFixed(3)),
       }))
       .sort((a, b) => b.importance - a.importance);
   }
 
-  private buildFeatureImportance(modelType: ModelType): { feature: string; importance: number }[] {
+  private buildFeatureImportance(modelType: ModelType): FeatureImportanceItem[] {
     const model = this.models[modelType];
     if (!model) return [];
     return this.computeFeatureImportance(model, this.encodedData, this.labels);
@@ -197,7 +234,7 @@ export class MLService {
 
   private calculateEqualOpportunityDifference(predictions: number[]): number {
     if (predictions.length !== this.labels.length) return 0;
-    const toBinary = (value: number) => (value >= this.medianSalary ? 1 : 0);
+    const toBinary = (value: number) => (value >= this.fairnessThresholdValue ? 1 : 0);
 
     const computeTPR = (group: 'Male' | 'Female'): number => {
       let tp = 0;
@@ -300,6 +337,18 @@ export class MLService {
     return [linear, randomForest];
   }
 
+  public recomputeTrainedModelResults(): ModelResult[] {
+    const results: ModelResult[] = [];
+    (['linear', 'random_forest'] as ModelType[]).forEach((modelType) => {
+      if (!this.models[modelType]) return;
+      const predictions = this.predictRaw(modelType, this.encodedData);
+      const metrics = this.toModelMetrics(modelType, predictions);
+      this.modelResults[modelType] = metrics;
+      results.push(this.toModelResult(metrics));
+    });
+    return results;
+  }
+
   public getModelResults(): ModelResultsRecord {
     return { ...this.modelResults };
   }
@@ -400,7 +449,7 @@ export class MLService {
     const confidence = modelType === 'random_forest' ? RF_BASE_CONFIDENCE : LINEAR_BASE_CONFIDENCE;
 
     // Baseline salary heuristic: 4 LPA base + 2.5 LPA per year of experience.
-    const avgSalaryForExp = 4 + (resolvedInput.experience || 3) * 2.5;
+    const avgSalaryForExp = SALARY_BASELINE + (resolvedInput.experience || 3) * SALARY_PER_EXPERIENCE_YEAR;
     const isBiased = resolvedInput.gender === 'Female' && prediction < avgSalaryForExp * 0.85;
 
     // Keep explanation concise in UI by showing top 4 drivers.

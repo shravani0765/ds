@@ -19,6 +19,12 @@ export interface FairnessMetrics {
   equalOpportunityDifference: number; // TPR_male - TPR_female at median salary threshold
 }
 
+export interface FeatureImportanceItem {
+  feature: string;
+  importance: number;
+  stdDev?: number;
+}
+
 export interface ModelResult {
   name: string;
   modelType: ModelType;
@@ -26,7 +32,7 @@ export interface ModelResult {
   rmse: number; // Root Mean Square Error
   r2Score: number; // R-squared score
   fairness: FairnessMetrics;
-  featureImportance: { feature: string; importance: number }[];
+  featureImportance: FeatureImportanceItem[];
 }
 
 export interface ModelMetrics {

@@ -11,7 +11,8 @@ import {
   ArrowRight,
   RefreshCw,
   BrainCircuit,
-  Database
+  Database,
+  Download
 } from 'lucide-react';
 import { 
   BarChart, 
@@ -69,6 +70,7 @@ export default function App() {
   const [showWhatIf, setShowWhatIf] = useState(false);
   const [selectedModelType, setSelectedModelType] = useState<ModelType>('random_forest');
   const [tradeoffData, setTradeoffData] = useState<ReturnType<MLService['getTradeoffComparison']>>(null);
+  const [fairnessPercentile, setFairnessPercentile] = useState(50);
 
   useEffect(() => {
     fetch('/Dataset.csv')
@@ -94,6 +96,7 @@ export default function App() {
             
             setDataset(parsedData);
             const service = new MLService(parsedData);
+            service.setFairnessThresholdPercentile(50);
             setMlService(service);
           }
         });
@@ -103,6 +106,7 @@ export default function App() {
         const data = generateSyntheticData(500);
         setDataset(data);
         const service = new MLService(data);
+        service.setFairnessThresholdPercentile(50);
         setMlService(service);
       });
   }, []);
@@ -129,6 +133,7 @@ export default function App() {
         
         setDataset(parsedData);
         const service = new MLService(parsedData);
+        service.setFairnessThresholdPercentile(fairnessPercentile);
         setMlService(service);
         setModels([]);
         setMitigatedModel(null);
@@ -143,6 +148,7 @@ export default function App() {
     if (!mlService) return;
     setIsTraining(true);
     setTimeout(() => {
+      mlService.setFairnessThresholdPercentile(fairnessPercentile);
       const results = mlService.trainModels();
       setModels(results);
       setTradeoffData(null);
@@ -157,6 +163,42 @@ export default function App() {
     setMitigatedModel(result);
     setTradeoffData(mlService.getTradeoffComparison());
     setActiveTab('mitigation');
+  };
+
+  const handleThresholdChange = (nextPercentile: number) => {
+    setFairnessPercentile(nextPercentile);
+    if (!mlService) return;
+    mlService.setFairnessThresholdPercentile(nextPercentile);
+    if (models.length === 0) return;
+    const updatedModels = mlService.recomputeTrainedModelResults();
+    setModels(updatedModels);
+    if (mitigatedModel) {
+      const updatedMitigation = mlService.mitigateBias('Reweighing');
+      setMitigatedModel(updatedMitigation);
+      setTradeoffData(mlService.getTradeoffComparison());
+    }
+  };
+
+  const handleDownloadReport = () => {
+    if (!mlService || models.length === 0) return;
+    const report = {
+      generatedAt: new Date().toISOString(),
+      threshold: {
+        percentile: fairnessPercentile,
+        salaryValue: mlService.getFairnessThresholdValue(),
+      },
+      models,
+      mitigatedModel,
+      tradeoffData,
+      topFeatures: primaryModel?.featureImportance.slice(0, 10) || [],
+    };
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `fairness-report-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handlePredict = (e: React.FormEvent) => {
@@ -222,6 +264,23 @@ export default function App() {
     [models],
   );
 
+  const bestModelSummary = useMemo(() => {
+    if (models.length === 0) return null;
+    const scored = [...models]
+      .map((model) => {
+        const fairnessPenalty =
+          Math.abs(1 - model.fairness.disparateImpact) * 10 +
+          Math.abs(model.fairness.equalOpportunityDifference) * 10 +
+          model.fairness.parityDifference;
+        return {
+          model,
+          combinedScore: model.rmse + fairnessPenalty,
+        };
+      })
+      .sort((a, b) => a.combinedScore - b.combinedScore);
+    return scored[0];
+  }, [models]);
+
   return (
     <div className="min-h-screen bg-[#fafafa] text-[#1a1a1a] font-sans">
       {/* Sidebar */}
@@ -241,7 +300,7 @@ export default function App() {
             active={activeTab === 'overview'} 
             onClick={() => setActiveTab('overview')} 
             icon={<LayoutDashboard size={18} />} 
-            label="Data Overview" 
+            label="Overview" 
           />
           <NavItem 
             active={activeTab === 'training'} 
@@ -301,7 +360,7 @@ export default function App() {
       <main className="pl-64 min-h-screen">
         <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-8 sticky top-0 z-10">
           <h2 className="font-semibold text-gray-800">
-            {activeTab === 'overview' && 'Dataset Insights'}
+            {activeTab === 'overview' && 'Overview Dashboard'}
             {activeTab === 'training' && 'Model Performance'}
             {activeTab === 'explainability' && 'Explainability Insights'}
             {activeTab === 'bias' && 'Fairness Audit'}
@@ -322,6 +381,14 @@ export default function App() {
             >
               {isTraining ? <RefreshCw size={16} className="animate-spin" /> : <BrainCircuit size={16} />}
               {models.length > 0 ? 'Retrain Models' : 'Train Models'}
+            </button>
+            <button
+              onClick={handleDownloadReport}
+              disabled={models.length === 0}
+              className="px-4 py-2 bg-white border border-gray-200 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors flex items-center gap-2 disabled:opacity-50"
+            >
+              <Download size={16} />
+              Download Report
             </button>
           </div>
         </header>
@@ -349,6 +416,63 @@ export default function App() {
                 <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full -mr-20 -mt-20 blur-3xl" />
                 <div className="absolute bottom-0 left-0 w-32 h-32 bg-indigo-400/20 rounded-full -ml-10 -mb-10 blur-2xl" />
               </div>
+
+              {bestModelSummary && (
+                <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm space-y-6">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                    <div>
+                      <h3 className="text-lg font-bold text-gray-900">Executive Overview</h3>
+                      <p className="text-sm text-gray-500">
+                        Best model selected by combined score (RMSE + fairness penalties).
+                      </p>
+                    </div>
+                    <div className="px-3 py-1 bg-indigo-50 text-indigo-700 text-xs font-bold rounded-full w-fit">
+                      Best Model: {bestModelSummary.model.name}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <StatCard label="RMSE" value={bestModelSummary.model.rmse.toFixed(2)} sub="Lower is better" />
+                    <StatCard label="R² Score" value={bestModelSummary.model.r2Score.toFixed(3)} sub="Higher is better" />
+                    <StatCard
+                      label="Fairness (DI)"
+                      value={bestModelSummary.model.fairness.disparateImpact.toFixed(3)}
+                      sub="Target near 1.0"
+                    />
+                    <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                      <h4 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Bias Indicator</h4>
+                      <div className={cn(
+                        "text-lg font-black mb-1",
+                        bestModelSummary.model.fairness.disparateImpact < 0.8 ||
+                        Math.abs(bestModelSummary.model.fairness.equalOpportunityDifference) > 0.1
+                          ? "text-red-600"
+                          : "text-green-600",
+                      )}>
+                        {bestModelSummary.model.fairness.disparateImpact < 0.8 ||
+                        Math.abs(bestModelSummary.model.fairness.equalOpportunityDifference) > 0.1
+                          ? 'Bias Risk'
+                          : 'Within Range'}
+                      </div>
+                      <p className="text-xs text-gray-500">Uses disparate impact and equal opportunity checks.</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-50 rounded-xl border border-gray-200 p-4">
+                    <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Top 3 Features</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {bestModelSummary.model.featureImportance.slice(0, 3).map((item) => (
+                        <div key={item.feature} className="bg-white border border-gray-200 rounded-lg p-3">
+                          <p className="text-sm font-bold text-gray-800">{item.feature}</p>
+                          <p className="text-xs text-gray-500">Importance: {item.importance.toFixed(1)}%</p>
+                          {typeof item.stdDev === 'number' && (
+                            <p className="text-[11px] text-gray-400">Std Dev: {item.stdDev.toFixed(2)}%</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <StatCard label="Total Records" value={dataset.length.toString()} sub="Rows in Dataset.csv" />
@@ -619,12 +743,68 @@ export default function App() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+                <div className="mt-6 overflow-x-auto">
+                  <table className="min-w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-gray-500 border-b border-gray-200">
+                        <th className="py-2 pr-4 font-semibold">Feature</th>
+                        <th className="py-2 pr-4 font-semibold">Importance</th>
+                        <th className="py-2 pr-4 font-semibold">Std Dev</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-gray-700">
+                      {primaryModel.featureImportance.slice(0, 8).map((item) => (
+                        <tr key={item.feature} className="border-b border-gray-100">
+                          <td className="py-2 pr-4">{item.feature}</td>
+                          <td className="py-2 pr-4">{item.importance.toFixed(2)}%</td>
+                          <td className="py-2 pr-4">{typeof item.stdDev === 'number' ? `${item.stdDev.toFixed(2)}%` : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           )}
 
           {activeTab === 'bias' && primaryModel && (
             <div className="space-y-8">
+              <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
+                  <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider flex items-center gap-2">
+                    Fairness Threshold Control
+                    <span
+                      title="Adjust the salary percentile used to convert regression outputs into binary outcomes for Equal Opportunity."
+                      className="text-gray-400 cursor-help"
+                    >
+                      <Info size={13} />
+                    </span>
+                  </h3>
+                  <p className="text-xs text-gray-500">
+                    Percentile: <span className="font-bold text-gray-700">{fairnessPercentile}%</span>
+                    {mlService && (
+                      <>
+                        {' '}| Salary Threshold: <span className="font-bold text-gray-700">₹{mlService.getFairnessThresholdValue().toFixed(2)}L</span>
+                      </>
+                    )}
+                  </p>
+                </div>
+                <input
+                  type="range"
+                  min={10}
+                  max={90}
+                  step={1}
+                  value={fairnessPercentile}
+                  onChange={(e) => handleThresholdChange(Number(e.target.value))}
+                  className="w-full accent-indigo-600"
+                />
+                <div className="flex justify-between text-[10px] text-gray-400 mt-2">
+                  <span>P10</span>
+                  <span>P50 (Median)</span>
+                  <span>P90</span>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm">
                   <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-6">Fairness Metrics Radar</h3>
@@ -677,7 +857,7 @@ export default function App() {
                     title="Equal Opportunity Difference" 
                     value={primaryModel.fairness.equalOpportunityDifference} 
                     threshold="≈ 0"
-                    desc="Difference in true positive rates between Male and Female groups at the median salary threshold."
+                    desc={`Difference in true positive rates between Male and Female groups at P${fairnessPercentile} salary threshold.`}
                     status={Math.abs(primaryModel.fairness.equalOpportunityDifference) > 0.1 ? 'fail' : 'pass'}
                     tooltip="Calculated as TPR_male - TPR_female. Near zero is preferred."
                   />
