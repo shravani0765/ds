@@ -10,6 +10,8 @@ export interface DataPoint {
   [key: string]: any;
 }
 
+export type ModelType = 'linear' | 'random_forest';
+
 export interface FairnessMetrics {
   salaryGap: number; // Difference in mean predicted salary between groups
   disparateImpact: number; // Ratio of mean predicted salary
@@ -18,12 +20,23 @@ export interface FairnessMetrics {
 
 export interface ModelResult {
   name: string;
+  modelType: ModelType;
   mae: number; // Mean Absolute Error
   rmse: number; // Root Mean Square Error
   r2Score: number; // R-squared score
   fairness: FairnessMetrics;
   featureImportance: { name: string; value: number }[];
 }
+
+export interface ModelMetrics {
+  modelType: ModelType;
+  mae: number;
+  rmse: number;
+  r2: number;
+  fairnessMetrics: FairnessMetrics;
+}
+
+export type ModelResultsRecord = Partial<Record<ModelType, ModelMetrics>>;
 
 export interface PredictionResult {
   prediction: number; // Predicted salary in LPA

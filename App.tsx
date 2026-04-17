@@ -34,11 +34,11 @@ import {
   Line
 } from 'recharts';
 import Papa from 'papaparse';
-import { generateSyntheticData } from './lib/dataset';
-import { MLService } from './lib/mlService';
-import { ResumeService } from './lib/resumeService';
-import { DataPoint, ModelResult, PredictionResult } from './types';
-import { cn } from './lib/utils';
+import { generateSyntheticData } from './dataset';
+import { MLService } from './mlService';
+import { ResumeService } from './resumeService';
+import { DataPoint, ModelResult, ModelType, PredictionResult } from './types';
+import { cn } from './utils';
 import { motion, AnimatePresence } from 'motion/react';
 
 const COLORS = ['#6366f1', '#f43f5e', '#10b981', '#f59e0b', '#8b5cf6'];
@@ -67,6 +67,7 @@ export default function App() {
   const [prediction, setPrediction] = useState<PredictionResult | null>(null);
   const [whatIfResult, setWhatIfResult] = useState<PredictionResult | null>(null);
   const [showWhatIf, setShowWhatIf] = useState(false);
+  const [selectedModelType, setSelectedModelType] = useState<ModelType>('random_forest');
 
   useEffect(() => {
     fetch('/Dataset.csv')
@@ -157,12 +158,12 @@ export default function App() {
   const handlePredict = (e: React.FormEvent) => {
     e.preventDefault();
     if (!mlService) return;
-    const res = mlService.predict(formData);
+    const res = mlService.predict(selectedModelType, formData);
     setPrediction(res);
     
     // What-If Analysis: Swap gender
     const whatIfData = { ...formData, gender: formData.gender === 'Male' ? 'Female' : 'Male' } as Partial<DataPoint>;
-    const whatIfRes = mlService.predict(whatIfData);
+    const whatIfRes = mlService.predict(selectedModelType, whatIfData);
     setWhatIfResult(whatIfRes);
   };
 
@@ -210,6 +211,12 @@ export default function App() {
       { name: 'Female', avgSalary: parseFloat(avgFemale.toFixed(1)) }
     ];
   }, [dataset]);
+
+  // Use RF as primary fairness view when available, otherwise fallback to first model.
+  const primaryModel = useMemo(
+    () => models.find((model) => model.modelType === 'random_forest') || models[0] || null,
+    [models],
+  );
 
   return (
     <div className="min-h-screen bg-[#fafafa] text-[#1a1a1a] font-sans">
@@ -569,7 +576,7 @@ export default function App() {
                 <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-8">Feature Importance (Explainable AI)</h3>
                 <div className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart layout="vertical" data={models[0]?.featureImportance}>
+                    <BarChart layout="vertical" data={primaryModel?.featureImportance}>
                       <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f0f0f0" />
                       <XAxis type="number" hide />
                       <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} width={100} />
@@ -582,7 +589,7 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'bias' && (
+          {activeTab === 'bias' && primaryModel && (
             <div className="space-y-8">
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                 <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm">
@@ -590,9 +597,9 @@ export default function App() {
                   <div className="h-80">
                     <ResponsiveContainer width="100%" height="100%">
                       <RadarChart cx="50%" cy="50%" outerRadius="80%" data={[
-                        { subject: 'Fairness Score', A: models[0].fairness.disparateImpact * 100, full: 100 },
-                        { subject: 'Salary Gap (Inv)', A: Math.max(0, (1 - (models[0].fairness.salaryGap / 10)) * 100), full: 100 },
-                        { subject: 'Diff in Chances', A: Math.max(0, (1 - (models[0].fairness.parityDifference / 10)) * 100), full: 100 },
+                        { subject: 'Fairness Score', A: primaryModel.fairness.disparateImpact * 100, full: 100 },
+                        { subject: 'Salary Gap (Inv)', A: Math.max(0, (1 - (primaryModel.fairness.salaryGap / 10)) * 100), full: 100 },
+                        { subject: 'Diff in Chances', A: Math.max(0, (1 - (primaryModel.fairness.parityDifference / 10)) * 100), full: 100 },
                       ]}>
                         <PolarGrid />
                         <PolarAngleAxis dataKey="subject" />
@@ -609,24 +616,24 @@ export default function App() {
                 <div className="space-y-4">
                   <FairnessCard 
                     title="Disparate Impact (Ratio)" 
-                    value={models[0].fairness.disparateImpact} 
+                    value={primaryModel.fairness.disparateImpact} 
                     threshold="0.8 - 1.25"
                     desc="Ratio of mean predicted salary for unprivileged (Female) vs privileged (Male) groups."
-                    status={models[0].fairness.disparateImpact < 0.8 ? 'fail' : 'pass'}
+                    status={primaryModel.fairness.disparateImpact < 0.8 ? 'fail' : 'pass'}
                   />
                   <FairnessCard 
                     title="Salary Gap (LPA)" 
-                    value={models[0].fairness.salaryGap} 
+                    value={primaryModel.fairness.salaryGap} 
                     threshold="< 1.0"
                     desc="Difference in mean predicted salary between Male and Female groups."
-                    status={models[0].fairness.salaryGap > 2.0 ? 'fail' : 'pass'}
+                    status={primaryModel.fairness.salaryGap > 2.0 ? 'fail' : 'pass'}
                   />
                   <FairnessCard 
                     title="Parity Difference" 
-                    value={models[0].fairness.parityDifference} 
+                    value={primaryModel.fairness.parityDifference} 
                     threshold="< 1.0"
                     desc="Absolute difference in mean outcomes across groups."
-                    status={models[0].fairness.parityDifference > 2.0 ? 'fail' : 'pass'}
+                    status={primaryModel.fairness.parityDifference > 2.0 ? 'fail' : 'pass'}
                   />
                 </div>
               </div>
@@ -637,7 +644,7 @@ export default function App() {
                   <h4 className="font-bold text-red-900 mb-1">Bias Detected</h4>
                   <p className="text-sm text-red-700">
                     The current model shows significant disparate impact against the female group. 
-                    The selection rate for females is only {(models[0].fairness.disparateImpact * 100).toFixed(1)}% of the male selection rate, 
+                    The selection rate for females is only {(primaryModel.fairness.disparateImpact * 100).toFixed(1)}% of the male selection rate, 
                     violating the "four-fifths rule" commonly used in legal and ethical audits.
                   </p>
                   <button 
@@ -651,7 +658,7 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'mitigation' && mitigatedModel && (
+          {activeTab === 'mitigation' && mitigatedModel && primaryModel && (
             <div className="space-y-8">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm relative overflow-hidden">
@@ -660,8 +667,8 @@ export default function App() {
                   </div>
                   <h3 className="font-bold text-gray-800 mb-6">Original Model</h3>
                   <div className="space-y-6">
-                    <FairnessProgress label="Disparate Impact" value={models[0].fairness.disparateImpact} color="#f43f5e" />
-                    <FairnessProgress label="Salary Equality" value={Math.max(0, 1 - (models[0].fairness.salaryGap / 15))} color="#f43f5e" />
+                    <FairnessProgress label="Disparate Impact" value={primaryModel.fairness.disparateImpact} color="#f43f5e" />
+                    <FairnessProgress label="Salary Equality" value={Math.max(0, 1 - (primaryModel.fairness.salaryGap / 15))} color="#f43f5e" />
                   </div>
                 </div>
 
@@ -682,8 +689,8 @@ export default function App() {
                 <div className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={[
-                      { name: 'Disparate Impact', Original: models[0].fairness.disparateImpact, Mitigated: mitigatedModel.fairness.disparateImpact },
-                      { name: 'Salary Equality', Original: Math.max(0, 1 - (models[0].fairness.salaryGap / 15)), Mitigated: Math.max(0, 1 - (mitigatedModel.fairness.salaryGap / 15)) },
+                      { name: 'Disparate Impact', Original: primaryModel.fairness.disparateImpact, Mitigated: mitigatedModel.fairness.disparateImpact },
+                      { name: 'Salary Equality', Original: Math.max(0, 1 - (primaryModel.fairness.salaryGap / 15)), Mitigated: Math.max(0, 1 - (mitigatedModel.fairness.salaryGap / 15)) },
                     ]}>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
                       <XAxis dataKey="name" axisLine={false} tickLine={false} />
@@ -727,6 +734,17 @@ export default function App() {
                 <div className="bg-white p-8 rounded-2xl border border-gray-200 shadow-sm">
                   <h3 className="font-bold text-gray-800 mb-6">Decision Input</h3>
                   <form onSubmit={handlePredict} className="space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-gray-500 uppercase">Model Type</label>
+                    <select
+                      value={selectedModelType}
+                      onChange={(e) => setSelectedModelType(e.target.value as ModelType)}
+                      className="w-full p-2 bg-white border border-gray-200 rounded-lg text-sm text-gray-700 outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="linear">Linear Regression</option>
+                      <option value="random_forest">Random Forest</option>
+                    </select>
+                  </div>
                   <InputGroup label="Age" type="number" value={formData.age} onChange={(v) => setFormData({...formData, age: v === "" ? NaN : parseInt(v)})} />
                   <div className="space-y-1">
                     <label className="text-xs font-bold text-gray-500 uppercase">Gender</label>
