@@ -88,7 +88,8 @@ export class MLService {
 
     // Add a tiny ridge term for numerical stability.
     const regularized = xtx.clone();
-    const lambda = 1e-8;
+    // Small ridge term to stabilize matrix inversion without heavily biasing coefficients.
+    const lambda = 1e-6;
     for (let i = 0; i < regularized.rows; i++) {
       regularized.set(i, i, regularized.get(i, i) + lambda);
     }
@@ -130,7 +131,7 @@ export class MLService {
 
   private shuffleColumn(features: number[][], featureIndex: number): number[][] {
     const shuffled = features.map((row) => [...row]);
-    const values = shuffled.map((row) => row[featureIndex]);
+    const values = shuffled.map((row) => row[featureIndex] ?? 0);
     for (let i = values.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [values[i], values[j]] = [values[j], values[i]];
@@ -151,11 +152,15 @@ export class MLService {
     const maybeRF = model as RandomForestRegression & { featureImportance?: () => number[] };
     if (typeof maybeRF.featureImportance === 'function') {
       const importances = maybeRF.featureImportance();
-      const max = Math.max(...importances.map((value) => Math.abs(value)), 1e-9);
+      const absImportances = importances.map((value) => Math.abs(value));
+      const max = Math.max(...absImportances, 0);
+      if (max === 0) {
+        return this.featureNames.map((feature) => ({ feature, importance: 0 }));
+      }
       return this.featureNames
         .map((feature, index) => ({
           feature,
-          importance: (Math.abs(importances[index] ?? 0) / max) * 100,
+          importance: ((absImportances[index] ?? 0) / max) * 100,
         }))
         .sort((a, b) => b.importance - a.importance);
     }
@@ -172,7 +177,10 @@ export class MLService {
       };
     });
 
-    const max = Math.max(...permutationScores.map((score) => score.importance), 1e-9);
+    const max = Math.max(...permutationScores.map((score) => score.importance), 0);
+    if (max === 0) {
+      return permutationScores.map((score) => ({ ...score, importance: 0 }));
+    }
     return permutationScores
       .map((score) => ({
         feature: score.feature,
@@ -188,6 +196,7 @@ export class MLService {
   }
 
   private calculateEqualOpportunityDifference(predictions: number[]): number {
+    if (predictions.length !== this.labels.length) return 0;
     const toBinary = (value: number) => (value >= this.medianSalary ? 1 : 0);
 
     const computeTPR = (group: 'Male' | 'Female'): number => {
@@ -210,6 +219,9 @@ export class MLService {
   }
 
   private calculateFairness(predictions: number[]): FairnessMetrics {
+    if (predictions.length !== this.dataset.length) {
+      return { salaryGap: 0, disparateImpact: 1, parityDifference: 0, equalOpportunityDifference: 0 };
+    }
     const malePredictions = this.maleIndices.map((i) => predictions[i]);
     const femalePredictions = this.femaleIndices.map((i) => predictions[i]);
 

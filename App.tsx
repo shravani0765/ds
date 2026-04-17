@@ -588,7 +588,7 @@ export default function App() {
                 <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider mb-8">Feature Importance (Explainable AI)</h3>
                 <div className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart layout="vertical" data={primaryModel?.featureImportance}>
+                    <BarChart layout="vertical" data={primaryModel ? primaryModel.featureImportance : []}>
                       <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f0f0f0" />
                       <XAxis type="number" hide />
                       <YAxis dataKey="feature" type="category" axisLine={false} tickLine={false} width={180} />
