@@ -30,6 +30,9 @@ export class MLService {
   private encodedData: number[][];
   private labels: number[];
   private featureNames: string[];
+  private medianSalary: number;
+  private maleIndices: number[];
+  private femaleIndices: number[];
   private models: Partial<Record<ModelType, StoredModel>> = {};
   private modelResults: ModelResultsRecord = {};
   private tradeoffComparison: TradeoffComparison | null = null;
@@ -40,6 +43,14 @@ export class MLService {
     this.encodedData = encodedData;
     this.labels = labels;
     this.featureNames = featureNames;
+    const sorted = [...labels].sort((a, b) => a - b);
+    this.medianSalary = sorted[Math.floor(sorted.length / 2)] ?? 0;
+    this.maleIndices = [];
+    this.femaleIndices = [];
+    for (let i = 0; i < this.dataset.length; i++) {
+      if (this.dataset[i].gender === 'Male') this.maleIndices.push(i);
+      else this.femaleIndices.push(i);
+    }
   }
 
   private preprocess(data: DataPoint[]) {
@@ -66,6 +77,9 @@ export class MLService {
   }
 
   private trainLinearRegression(features: number[][], labels: number[]): LinearRegressionModel {
+    if ((features[0]?.length || 0) > 50) {
+      console.warn('Linear regression training may be slower with high feature counts (>50).');
+    }
     const withIntercept = features.map((row) => [1, ...row]);
     const x = new Matrix(withIntercept);
     const y = Matrix.columnVector(labels);
@@ -174,9 +188,7 @@ export class MLService {
   }
 
   private calculateEqualOpportunityDifference(predictions: number[]): number {
-    const sorted = [...this.labels].sort((a, b) => a - b);
-    const medianSalary = sorted[Math.floor(sorted.length / 2)] ?? 0;
-    const toBinary = (value: number) => (value >= medianSalary ? 1 : 0);
+    const toBinary = (value: number) => (value >= this.medianSalary ? 1 : 0);
 
     const computeTPR = (group: 'Male' | 'Female'): number => {
       let tp = 0;
@@ -198,13 +210,8 @@ export class MLService {
   }
 
   private calculateFairness(predictions: number[]): FairnessMetrics {
-    const maleIndices = this.dataset.map((d, i) => (d.gender === 'Male' ? i : -1)).filter((i) => i !== -1);
-    const femaleIndices = this.dataset
-      .map((d, i) => (d.gender === 'Female' ? i : -1))
-      .filter((i) => i !== -1);
-
-    const malePredictions = maleIndices.map((i) => predictions[i]);
-    const femalePredictions = femaleIndices.map((i) => predictions[i]);
+    const malePredictions = this.maleIndices.map((i) => predictions[i]);
+    const femalePredictions = this.femaleIndices.map((i) => predictions[i]);
 
     const meanMaleSalary =
       malePredictions.length > 0 ? malePredictions.reduce((a, b) => a + b, 0) / malePredictions.length : 0;
@@ -306,11 +313,16 @@ export class MLService {
       reductionFactor = 0.25;
     }
 
+    const mitigationStrength = 1 + (0.25 - reductionFactor);
+    const maeInflation = 1 + (MITIGATION_MAE_INFLATION - 1) * mitigationStrength;
+    const rmseInflation = 1 + (MITIGATION_RMSE_INFLATION - 1) * mitigationStrength;
+    const r2Reduction = MITIGATION_R2_REDUCTION * mitigationStrength;
+
     const after: ModelMetrics = {
       modelType: source.modelType,
-      mae: source.mae * MITIGATION_MAE_INFLATION,
-      rmse: source.rmse * MITIGATION_RMSE_INFLATION,
-      r2: Math.max(0, source.r2 - MITIGATION_R2_REDUCTION),
+      mae: source.mae * maeInflation,
+      rmse: source.rmse * rmseInflation,
+      r2: Math.max(0, source.r2 - r2Reduction),
       fairnessMetrics: {
         salaryGap: source.fairnessMetrics.salaryGap * reductionFactor,
         disparateImpact: Math.min(

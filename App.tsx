@@ -591,7 +591,7 @@ export default function App() {
                     <BarChart layout="vertical" data={primaryModel?.featureImportance}>
                       <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f0f0f0" />
                       <XAxis type="number" hide />
-                      <YAxis dataKey="feature" type="category" axisLine={false} tickLine={false} width={140} />
+                      <YAxis dataKey="feature" type="category" axisLine={false} tickLine={false} width={180} />
                       <Tooltip />
                       <Bar dataKey="importance" fill="#6366f1" radius={[0, 4, 4, 0]} barSize={30} />
                     </BarChart>
@@ -634,7 +634,7 @@ export default function App() {
                         { subject: 'Fairness Score', A: primaryModel.fairness.disparateImpact * 100, full: 100 },
                         { subject: 'Salary Gap (Inv)', A: Math.max(0, (1 - (primaryModel.fairness.salaryGap / 10)) * 100), full: 100 },
                         { subject: 'Diff in Chances', A: Math.max(0, (1 - (primaryModel.fairness.parityDifference / 10)) * 100), full: 100 },
-                        { subject: 'Equal Opp (Inv)', A: Math.max(0, (1 - Math.abs(primaryModel.fairness.equalOpportunityDifference)) * 100), full: 100 },
+                        { subject: 'Equal Opportunity Score', A: Math.max(0, (1 - Math.abs(primaryModel.fairness.equalOpportunityDifference)) * 100), full: 100 },
                       ]}>
                         <PolarGrid />
                         <PolarAngleAxis dataKey="subject" />
@@ -715,7 +715,7 @@ export default function App() {
                   <div className="space-y-6">
                     <FairnessProgress label="Disparate Impact" value={primaryModel.fairness.disparateImpact} color="#f43f5e" />
                     <FairnessProgress label="Salary Equality" value={Math.max(0, 1 - (primaryModel.fairness.salaryGap / 15))} color="#f43f5e" />
-                    <FairnessProgress label="Equal Opportunity (Inv)" value={Math.max(0, 1 - Math.abs(primaryModel.fairness.equalOpportunityDifference))} color="#f43f5e" />
+                    <FairnessProgress label="Equal Opportunity Score" value={Math.max(0, 1 - Math.abs(primaryModel.fairness.equalOpportunityDifference))} color="#f43f5e" />
                   </div>
                 </div>
 
@@ -727,7 +727,7 @@ export default function App() {
                   <div className="space-y-6">
                     <FairnessProgress label="Disparate Impact" value={mitigatedModel.fairness.disparateImpact} color="#10b981" />
                     <FairnessProgress label="Salary Equality" value={Math.max(0, 1 - (mitigatedModel.fairness.salaryGap / 15))} color="#10b981" />
-                    <FairnessProgress label="Equal Opportunity (Inv)" value={Math.max(0, 1 - Math.abs(mitigatedModel.fairness.equalOpportunityDifference))} color="#10b981" />
+                    <FairnessProgress label="Equal Opportunity Score" value={Math.max(0, 1 - Math.abs(mitigatedModel.fairness.equalOpportunityDifference))} color="#10b981" />
                   </div>
                 </div>
               </div>
