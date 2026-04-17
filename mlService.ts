@@ -16,6 +16,10 @@ interface LinearRegressionModel {
 }
 
 type StoredModel = RandomForestRegression | LinearRegressionModel;
+const RF_BASE_CONFIDENCE = 0.88;
+const LINEAR_BASE_CONFIDENCE = 0.82;
+const MIN_DISPARATE_IMPACT = 0.95;
+const DISPARATE_IMPACT_IMPROVEMENT = 0.1;
 
 export class MLService {
   private dataset: DataPoint[];
@@ -246,7 +250,10 @@ export class MLService {
       r2Score: source.r2,
       fairness: {
         salaryGap: source.fairnessMetrics.salaryGap * reductionFactor,
-        disparateImpact: Math.min(1, Math.max(0.95, source.fairnessMetrics.disparateImpact + 0.1)),
+        disparateImpact: Math.min(
+          1,
+          Math.max(MIN_DISPARATE_IMPACT, source.fairnessMetrics.disparateImpact + DISPARATE_IMPACT_IMPROVEMENT),
+        ),
         parityDifference: source.fairnessMetrics.parityDifference * reductionFactor,
       },
       featureImportance: this.buildFeatureImportance(source.modelType),
@@ -259,11 +266,15 @@ export class MLService {
     modelTypeOrInput: ModelType | Partial<DataPoint>,
     inputArg?: Partial<DataPoint>,
   ): PredictionResult {
-    let modelType: ModelType = 'linear';
+    // Backward-compatible default predict(input) always uses RF when possible.
+    let modelType: ModelType = 'random_forest';
     if (typeof modelTypeOrInput === 'string') {
       modelType = modelTypeOrInput;
-    } else if (this.modelResults.random_forest) {
-      modelType = 'random_forest';
+      if (!inputArg) {
+        throw new Error('Prediction input is required when model type is provided.');
+      }
+    } else if (!this.models.random_forest && this.models.linear) {
+      modelType = 'linear';
     }
     const input: Partial<DataPoint> = typeof modelTypeOrInput === 'string' ? inputArg || {} : modelTypeOrInput;
 
@@ -281,7 +292,7 @@ export class MLService {
     ];
 
     const prediction = parseFloat(this.predictRaw(modelType, [encodedInput])[0].toFixed(1));
-    const confidence = modelType === 'random_forest' ? 0.88 : 0.82;
+    const confidence = modelType === 'random_forest' ? RF_BASE_CONFIDENCE : LINEAR_BASE_CONFIDENCE;
 
     const avgSalaryForExp = 4 + (input.experience || 3) * 2.5;
     const isBiased = input.gender === 'Female' && prediction < avgSalaryForExp * 0.85;
